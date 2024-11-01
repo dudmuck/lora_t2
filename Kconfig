@@ -1,0 +1,27 @@
+# Copyright (c) 2021 Nordic Semiconductor ASA
+# SPDX-License-Identifier: Apache-2.0
+#
+# This Kconfig file is picked by the Zephyr build system because it is defined
+# as the module Kconfig entry point (see zephyr/module.yml). You can browse
+# module options by going to Zephyr -> Modules in Kconfig.
+
+choice RADIO
+    prompt "radio driver built from source"
+    default RADIO_SX126X
+    help
+        select the radio driver built from source
+
+config RADIO_SX126X
+    bool "Enable sx126x radio"
+    help
+        Use sx126x
+
+config RADIO_LR11XX
+    bool "Enable LR11xx radio & remove sx126x"
+    help
+        Use LR11xx radio device instead of sx126x
+
+endchoice # RADIO
+
+rsource "drivers/Kconfig"
+rsource "lib/Kconfig"
