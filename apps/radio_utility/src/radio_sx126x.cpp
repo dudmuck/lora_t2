@@ -6,12 +6,14 @@ LOG_MODULE_REGISTER(radio_sx126x, LOG_LEVEL_INF);
 SX126x Radio::radio;
 unsigned Radio::tcxoDelayTicks;
 const char* const Radio::chipNum_str = "SX126x";
-uint8_t Radio::pa_config_buf[4];
+sx126x_pa_cfg_params_t Radio::pa_config;
 //ModulationParams_t Radio::mpFSK, Radio::mpLORA;
 sx126x_mod_params_lora_t Radio::mpLORA;
 sx126x_mod_params_gfsk_t Radio::mpFSK;
 uint8_t Radio::cadParams[7];
-PacketParams_t Radio::ppFSK, Radio::ppLORA;
+//PacketParams_t Radio::ppFSK, Radio::ppLORA;
+sx126x_pkt_params_gfsk_t Radio::ppFSK;
+sx126x_pkt_params_lora_t Radio::ppLORA;
 uint16_t Radio::ppg;
 uint8_t Radio::bw_idx;
 uint8_t Radio::tx_param_buf[2];
@@ -47,7 +49,12 @@ bool Radio::lora_sf_write(const char* str)
 void Radio::lora_sf_print()
 {
 	loraConfig0_t conf0;
-	conf0.octet = 0;	//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG0, 1);
+	//conf0.octet = 0;	//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG0, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_LORA_CONFIG0, &conf0.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
 	mpLORA.sf = (sx126x_lora_sf_t)conf0.bits.modem_sf;
 	printf_uart("%u", conf0.bits.modem_sf);
 }
@@ -195,19 +202,34 @@ const button_item_t Radio::lora_cad_item = { _ITEM_BUTTON, "CAD", cad_push };
 
 bool Radio::lora_headerType_push()
 {
-	if (ppLORA.lora.HeaderType)
+	if (ppLORA.header_type == SX126X_LORA_PKT_IMPLICIT)
+		ppLORA.header_type = SX126X_LORA_PKT_EXPLICIT;
+	else
+		ppLORA.header_type = SX126X_LORA_PKT_IMPLICIT;
+/*	if (ppLORA.lora.HeaderType)
 		ppLORA.lora.HeaderType = 0;
 	else
-		ppLORA.lora.HeaderType = 1;
+		ppLORA.lora.HeaderType = 1;*/
 
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 6, 0, ppLORA.buf);
-	return ppLORA.lora.HeaderType;
+	sx126x_status_t ret = sx126x_set_lora_pkt_params(transceiver, &ppLORA);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_lora_pkt_params", ret);
+		return 0;
+	}
+
+	return (ppLORA.header_type == SX126X_LORA_PKT_IMPLICIT);
 }
 bool Radio::lora_headerType_read()
 {
 	loraConfig1_t conf1;
-	conf1.octet = 0;//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG1, 1);
-	ppLORA.lora.HeaderType = conf1.bits.implicit_header;
+	//conf1.octet = 0;//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG1, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_LORA_CONFIG1, &conf1.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return false;
+	}
+	ppLORA.header_type = (sx126x_lora_pkt_len_modes_t)conf1.bits.implicit_header;
 	return conf1.bits.implicit_header;
 }
 const toggle_item_t Radio::lora_headerType_item = { _ITEM_TOGGLE, "EXPLICIT", "IMPLICIT", lora_headerType_read, lora_headerType_push};
@@ -304,18 +326,35 @@ const dropdown_item_t Radio::lora_bw_item = { _ITEM_DROPDOWN, lora_bwstrs, lora_
 
 void Radio::lora_pblLen_print()
 {
-	unsigned val = 0;//yyy TODO = radio.readReg(REG_ADDR_LORA_PREAMBLE_SYMBNB, 2);
-	ppLORA.lora.PreambleLengthHi = val >> 8;
-	ppLORA.lora.PreambleLengthLo = val;
+	uint8_t buf[2];
+	unsigned val;
+	//unsigned val = 0;//yyy TODO = radio.readReg(REG_ADDR_LORA_PREAMBLE_SYMBNB, 2);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_LORA_PREAMBLE_SYMBNB, buf, 2);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	val = buf[0];
+	val <<= 8;
+	val |= buf[1];
+	ppLORA.preamble_len_in_symb = val;
+	//ppLORA.lora.PreambleLengthHi = val >> 8;
+	//ppLORA.lora.PreambleLengthLo = val;
 	printf_uart("%u", val);
 }
 bool Radio::lora_pblLen_write(const char* txt)
 {
 	unsigned n;
 	if (sscanf(txt, "%u", &n) == 1) {
-		ppLORA.lora.PreambleLengthHi = n >> 8;
-		ppLORA.lora.PreambleLengthLo = n;
+		ppLORA.preamble_len_in_symb = n;
+		//ppLORA.lora.PreambleLengthHi = n >> 8;
+		//ppLORA.lora.PreambleLengthLo = n;
 		//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 6, 0, ppLORA.buf);
+		sx126x_status_t ret = sx126x_set_lora_pkt_params(transceiver, &ppLORA);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_set_lora_pkt_params", ret);
+			return false;
+		}
 	}
 	return false;
 }
@@ -348,38 +387,56 @@ const toggle_item_t Radio::lora_ppmOffset_item = { _ITEM_TOGGLE, "LowDatarateOpt
 
 bool Radio::lora_inviq_push()
 {
-	if (ppLORA.lora.InvertIQ)
+	ppLORA.invert_iq_is_on ^= true;
+	/*if (ppLORA.lora.InvertIQ)
 		ppLORA.lora.InvertIQ = 0;
 	else
-		ppLORA.lora.InvertIQ = 1;
+		ppLORA.lora.InvertIQ = 1;*/
 
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 6, 0, ppLORA.buf);
-	return ppLORA.lora.InvertIQ;
+	sx126x_status_t ret = sx126x_set_lora_pkt_params(transceiver, &ppLORA);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_lora_pkt_params", ret);
+		return false;
+	}
+	//return ppLORA.lora.InvertIQ;
+	return ppLORA.invert_iq_is_on;
 }
 bool Radio::lora_inviq_read()
 {
 	loraConfig1_t conf1;
-	conf1.octet = 0;//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG1, 1);
-	ppLORA.lora.InvertIQ = conf1.bits.rx_invert_iq;
+	//conf1.octet = 0;//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG1, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_LORA_CONFIG1, &conf1.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return false;
+	}
+	/*ppLORA.lora.InvertIQ*/ ppLORA.invert_iq_is_on = conf1.bits.rx_invert_iq;
 	return conf1.bits.rx_invert_iq;
 }
 const toggle_item_t Radio::lora_inviq_item = { _ITEM_TOGGLE, "InvertIQ", NULL, lora_inviq_read, lora_inviq_push};
 
 bool Radio::lora_crcon_push()
 {
-	if (ppLORA.lora.CRCType)
-		ppLORA.lora.CRCType = 0;
-	else
-		ppLORA.lora.CRCType = 1;
-
+	ppLORA.crc_is_on ^= true;
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 6, 0, ppLORA.buf);
-	return ppLORA.lora.CRCType;
+	sx126x_status_t ret = sx126x_set_lora_pkt_params(transceiver, &ppLORA);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_lora_pkt_params", ret);
+		return false;
+	}
+	return ppLORA.crc_is_on;
 }
 bool Radio::lora_crcon_read()
 {
 	loraConfig2_t conf2;
-	conf2.octet = 0;//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG2, 1);
-	ppLORA.lora.CRCType = conf2.bits.tx_payload_crc16_en;
+	//conf2.octet = 0;//yyy TODO radio.readReg(REG_ADDR_LORA_CONFIG2, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_LORA_CONFIG2, &conf2.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return false;
+	}
+	/*ppLORA.lora.CRCType*/ppLORA.crc_is_on  = conf2.bits.tx_payload_crc16_en;
 	return conf2.bits.tx_payload_crc16_en;
 }
 const toggle_item_t Radio::lora_crcon_item = { _ITEM_TOGGLE, "CrcOn", NULL, lora_crcon_read, lora_crcon_push};
@@ -446,14 +503,20 @@ bool Radio::gfsk_bitrate_write(const char* txt)
 }
 void Radio::gfsk_bitrate_print()
 {
+	uint8_t buf[3];
 	unsigned d;
-	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_BITRATE, (uint8_t*)&d, 3);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_BITRATE, buf, 3);
 	if (ret != SX126X_STATUS_OK) {
 		log_printf("%d = sx126x_read_register", ret);
 		return;
 	}
 
 	//unsigned d = 0;//yyy TODO radio.readReg(REG_ADDR_BITRATE, 3);
+	d = buf[0];
+	d <<= 8;
+	d |= buf[1];
+	d <<= 8;
+	d |= buf[2];
 	float f = d / 32.0;
 	mpFSK.br_in_bps = XTAL_FREQ_HZ / f;
 	printf_uart("%u", (unsigned)(XTAL_FREQ_HZ / f));
@@ -504,18 +567,35 @@ const dropdown_item_t Radio::gfsk_bt_item = { _ITEM_DROPDOWN, gfsk_bts, gfsk_bts
 
 void Radio::gfsk_pblLen_print()
 {
-	unsigned n = 0;// yyy TODO radio.readReg(REG_ADDR_FSK_PREAMBLE_TXLEN , 2);
-	ppFSK.gfsk.PreambleLengthHi = n << 8; // param1
-	ppFSK.gfsk.PreambleLengthLo = n;// param2
-	printf_uart("%u", n);
+	uint8_t buf[2];
+	unsigned val;
+	//unsigned n = 0;// yyy TODO radio.readReg(REG_ADDR_FSK_PREAMBLE_TXLEN , 2);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PREAMBLE_TXLEN, buf, 2);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	val = buf[0];
+	val <<= 8;
+	val |= buf[1];
+	//ppFSK.gfsk.PreambleLengthHi = n << 8; // param1
+	//ppFSK.gfsk.PreambleLengthLo = n;// param2
+	ppFSK.preamble_len_in_bits = val;
+	printf_uart("%u", val);
 }
 bool Radio::gfsk_pblLen_write(const char* txt)
 {
 	unsigned n;
 	if (sscanf(txt, "%u", &n) == 1) {
-		ppFSK.gfsk.PreambleLengthHi = n << 8; // param1
-		ppFSK.gfsk.PreambleLengthLo = n;// param2
+		ppFSK.preamble_len_in_bits = n;
+		//ppFSK.gfsk.PreambleLengthHi = n << 8; // param1
+		//ppFSK.gfsk.PreambleLengthLo = n;// param2
 		//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
+		sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+			return false;
+		}
 	}
 	return false;
 }
@@ -588,7 +668,18 @@ const dropdown_item_t Radio::gfsk_rxbw_item = { _ITEM_DROPDOWN, rxbw_str, rxbw_s
 
 void Radio::gfsk_fdev_print()
 {
-	unsigned d = 1;	//yyy TODO radio.readReg(REG_ADDR_FREQDEV, 3);
+	uint8_t buf[3];
+	unsigned d;	//yyy TODO radio.readReg(REG_ADDR_FREQDEV, 3);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FREQDEV, buf, 3);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	d = buf[0];
+	d <<= 8;
+	d |= buf[1];
+	d <<= 8;
+	d |= buf[2];
 	printf_uart("%u", (unsigned)(d * FREQ_STEP));
 }
 
@@ -610,20 +701,35 @@ const value_item_t Radio::gfsk_fdev_item = { _ITEM_VALUE, 8, gfsk_fdev_print, gf
 
 bool Radio::gfsk_fixLen_read()
 {
+	sx126x_status_t ret;
 	pktCtrl0_t pktCtrl0;
-	pktCtrl0.octet = 0;//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL0, 1);
-	ppFSK.gfsk.PacketType = pktCtrl0.bits.pkt_len_format; // param6
+	//pktCtrl0.octet = 0;//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL0, 1);
+	ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PKTCTRL0, &pktCtrl0.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return false;
+	}
+	ppLORA.header_type = (sx126x_lora_pkt_len_modes_t)pktCtrl0.bits.pkt_len_format; // param6
 	return pktCtrl0.bits.pkt_len_format;
 }
 bool Radio::gfsk_fixLen_push()
 {
-	if (ppFSK.gfsk.PacketType)
+	/*if (ppFSK.gfsk.PacketType)
 		ppFSK.gfsk.PacketType = 0;
 	else
-		ppFSK.gfsk.PacketType = 1;
-
+		ppFSK.gfsk.PacketType = 1;*/
+	if (ppFSK.header_type == SX126X_GFSK_PKT_FIX_LEN)
+		ppFSK.header_type = SX126X_GFSK_PKT_VAR_LEN;
+	else
+		ppFSK.header_type = SX126X_GFSK_PKT_FIX_LEN;
+    
+	sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+		return 0;
+	}
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
-	return ppFSK.gfsk.PacketType;
+	return ppFSK.header_type == SX126X_GFSK_PKT_VAR_LEN;
 }
 const toggle_item_t Radio::gfsk_fixLen_item = { _ITEM_TOGGLE,
 	"fixed   ",
@@ -633,8 +739,15 @@ const toggle_item_t Radio::gfsk_fixLen_item = { _ITEM_TOGGLE,
 
 void Radio::gfsk_swl_print()
 {
+	uint8_t val;
 	//yyy TODO ppFSK.gfsk.SyncWordLength = radio.readReg(REG_ADDR_FSK_SYNC_LEN, 1);// param4
-	printf_uart("%u", ppFSK.gfsk.SyncWordLength);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_SYNC_LEN, &val, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	ppFSK.sync_word_len_in_bits = val;
+	printf_uart("%u", ppFSK.sync_word_len_in_bits);
 }
 bool Radio::gfsk_swl_write(const char* txt)
 {
@@ -642,26 +755,38 @@ bool Radio::gfsk_swl_write(const char* txt)
 	unsigned r;
 	r = sscanf(txt, "%u", &n);
 	if (r == 1) {
-		ppFSK.gfsk.SyncWordLength = n;
+		ppFSK.sync_word_len_in_bits = n;
+		//ppFSK.gfsk.SyncWordLength = n;
 		//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
+		sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+			return false;
+		}
 	}
 	return false;
 }
 const value_item_t Radio::gfsk_swl_item = { _ITEM_VALUE, 3, gfsk_swl_print, gfsk_swl_write};
 
 static const char* const fsk_detlens[] = {
-	" off  ",
-	" 8bits",
-	"16bits",
-	"24bits",
-	"32bits",
+	" off  ", // SX126X_GFSK_PREAMBLE_DETECTOR_OFF
+	" 8bits", // SX126X_GFSK_PREAMBLE_DETECTOR_MIN_8BITS
+	"16bits", // SX126X_GFSK_PREAMBLE_DETECTOR_MIN_16BITS
+	"24bits", // SX126X_GFSK_PREAMBLE_DETECTOR_MIN_24BITS
+	"32bits", // SX126X_GFSK_PREAMBLE_DETECTOR_MIN_32BITS 
 	NULL
 };
 unsigned Radio::gfsk_pblDetLen_read(bool forWriting)
 {
 	pktCtrl1_t pktCtrl1;
-	pktCtrl1.octet = 0;	//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL1, 1);
-	ppFSK.gfsk.PreambleDetectorLength = pktCtrl1.octet & 0x07;	// param3
+	//pktCtrl1.octet = 0;	//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL1, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PKTCTRL1, &pktCtrl1.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	ppFSK.preamble_detector = (sx126x_gfsk_preamble_detector_t)(pktCtrl1.octet & 0x07);	// param3   TODO verify values
+	//log_printf("and 0x7 -> %u, preamble_len_rx -> %u\r\n", pktCtrl1.octet & 0x07, pktCtrl1.bits.preamble_len_rx + 1);
 	if (pktCtrl1.bits.preamble_det_on)
 		return pktCtrl1.bits.preamble_len_rx + 1;
 	else
@@ -669,12 +794,34 @@ unsigned Radio::gfsk_pblDetLen_read(bool forWriting)
 }
 menuMode_e Radio::gfsk_pblDetLen_write(unsigned sidx)
 {
-	if (sidx == 0)
-		ppFSK.gfsk.PreambleDetectorLength = 0;
+	switch (sidx) {
+		case 0:
+			ppFSK.preamble_detector = SX126X_GFSK_PREAMBLE_DETECTOR_OFF;
+			break;
+		case 1:
+			ppFSK.preamble_detector = SX126X_GFSK_PREAMBLE_DETECTOR_MIN_8BITS;
+			break;
+		case 2:
+			ppFSK.preamble_detector = SX126X_GFSK_PREAMBLE_DETECTOR_MIN_16BITS;
+			break;
+		case 3:
+			ppFSK.preamble_detector = SX126X_GFSK_PREAMBLE_DETECTOR_MIN_24BITS;
+			break;
+		case 4:
+			ppFSK.preamble_detector = SX126X_GFSK_PREAMBLE_DETECTOR_MIN_32BITS;
+			break;
+	}
+	/*if (sidx == 0)
+		ppFSK.preamble_detector = 0;
 	else
-		ppFSK.gfsk.PreambleDetectorLength = sidx + 3;
+		ppFSK.preamble_detector = sidx + 3;*/
 
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
+	sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+		return MENUMODE_NONE;
+	}
 	return MENUMODE_REDRAW;
 }
 const dropdown_item_t Radio::gfsk_pblDetLen_item = { _ITEM_DROPDOWN, fsk_detlens, fsk_detlens, gfsk_pblDetLen_read, gfsk_pblDetLen_write};
@@ -717,20 +864,32 @@ bool Radio::gfsk_syncword_write(const char* txt)
 const value_item_t Radio::gfsk_syncword_item = { _ITEM_VALUE, 17, gfsk_syncword_print, gfsk_syncword_write};
 
 static const char* const addrcomps[] = {
-	"		  off		",
-	"NodeAddress		  ",
+	"        off          ",
+	"NodeAddress          ",
 	"NodeAddress+broadcast",
 	NULL
 };
 unsigned Radio::gfsk_addrcomp_read(bool forWriting)
 {
-	ppFSK.gfsk.AddrComp = 0;//yyy TODO radio.readReg(REG_ADDR_NODEADDRCOMP, 1);// param5
-	return ppFSK.gfsk.AddrComp;
+	uint8_t v;
+	//ppFSK.gfsk.AddrComp = 0;//yyy TODO radio.readReg(REG_ADDR_NODEADDRCOMP, 1);// param5
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_NODEADDRCOMP, &v, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	ppFSK.address_filtering = (sx126x_gfsk_address_filtering_t)v;
+	return ppFSK.address_filtering;
 }
 menuMode_e Radio::gfsk_addrcomp_write(unsigned sidx)
 {
-	ppFSK.gfsk.AddrComp = sidx;
+	ppFSK.address_filtering = (sx126x_gfsk_address_filtering_t)sidx;
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
+	sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+		return MENUMODE_NONE;
+	}
 	return MENUMODE_REDRAW;
 }
 const dropdown_item_t Radio::gfsk_addrcomp_item = { _ITEM_DROPDOWN, addrcomps, addrcomps, gfsk_addrcomp_read, gfsk_addrcomp_write};
@@ -746,47 +905,107 @@ bool Radio::gfsk_crcinit_write(const char* txt)
 }
 void Radio::gfsk_crcinit_print()
 {
+	unsigned val;
+	uint8_t buf[2];
 	//yyy TODO printf_uart("%04x", (unsigned)radio.readReg(REG_ADDR_FSK_CRCINIT, 2));
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_CRCINIT, buf, 2);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	val = buf[0];
+	val <<= 8;
+	val |= buf[1];
+	printf_uart("%04x", val);
 }
 const value_item_t Radio::gfsk_crcinit_item = { _ITEM_VALUE, 5, gfsk_crcinit_print, gfsk_crcinit_write};
 
 bool Radio::gfsk_nodeadrs_write(const char* txt)
 {
-	//unsigned v;
-	/*yyy TODO if (sscanf(txt, "%x", &v) == 1)
-		radio.writeReg(REG_ADDR_NODEADDR, v, 1);*/
+	unsigned v;
+	if (sscanf(txt, "%x", &v) == 1) {
+		uint8_t buf = v;
+		//radio.writeReg(REG_ADDR_NODEADDR, v, 1);
+		sx126x_status_t ret = sx126x_write_register(transceiver, REG_ADDR_NODEADDR, &buf, 1);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_write_register", ret);
+			return false;
+		}
+	}
 
 	return false;
 }
 void Radio::gfsk_nodeadrs_print()
 {
+	uint8_t val;
 	//yyy TODO printf_uart("%02x", (unsigned)radio.readReg(REG_ADDR_NODEADDR, 1));
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_NODEADDR, &val, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	printf_uart("%02x", val);
 }
 const value_item_t Radio::gfsk_nodeadrs_item = { _ITEM_VALUE, 3, gfsk_nodeadrs_print, gfsk_nodeadrs_write};
 
 bool Radio::gfsk_broadcast_write(const char* txt)
 {
-	//unsigned v;
-	/*yyy TODO if (sscanf(txt, "%x", &v) == 1)
-		radio.writeReg(REG_ADDR_BROADCAST, v, 1);*/
+	unsigned v;
+	if (sscanf(txt, "%x", &v) == 1) {
+		uint8_t buf = v;
+		//radio.writeReg(REG_ADDR_BROADCAST, v, 1);*/
+		sx126x_status_t ret = sx126x_write_register(transceiver, REG_ADDR_BROADCAST, &buf, 1);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_write_register", ret);
+			return false;
+		}
+	}
 
 	return false;
 }
 void Radio::gfsk_broadcast_print()
 {
+	uint8_t v;
 	//yyy TODO printf_uart("%02x", (unsigned)radio.readReg(REG_ADDR_BROADCAST, 1));
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_BROADCAST, &v, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	printf_uart("%02x", v);
 }
 const value_item_t Radio::gfsk_broadcast_item = { _ITEM_VALUE, 3, gfsk_broadcast_print, gfsk_broadcast_write};
 
 void Radio::gfsk_crcpoly_print()
 {
+	unsigned val;
+	uint8_t buf[2];
 	//yyy TODO printf_uart("%04x", (unsigned)radio.readReg(REG_ADDR_FSK_CRCPOLY, 2));
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_CRCPOLY, buf, 2);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	val = buf[0];
+	val <<= 8;
+	val |= buf[1];
+	printf_uart("%04x", val);
 }
 bool Radio::gfsk_crcpoly_write(const char* txt)
 {
-	//unsigned v;
-	/*yyy TODO if (sscanf(txt, "%x", &v) == 1)
-		radio.writeReg(REG_ADDR_FSK_CRCPOLY, v, 2);*/
+	uint8_t buf[2];
+	unsigned v;
+	if (sscanf(txt, "%x", &v) == 1) {
+		buf[1] = v & 0xff; // buf[1] is low byte
+		v >>= 8;
+		buf[0] = v & 0xff; // buf[0] is high byte
+		//radio.writeReg(REG_ADDR_FSK_CRCPOLY, v, 2);
+		sx126x_status_t ret = sx126x_write_register(transceiver, REG_ADDR_FSK_CRCPOLY, buf, 2);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_write_register", ret);
+			return false;
+		}
+	}
 
 	return false;
 }
@@ -795,18 +1014,48 @@ const value_item_t Radio::gfsk_crcpoly_item = { _ITEM_VALUE, 5, gfsk_crcpoly_pri
 
 void Radio::gfsk_whiteInit_print()
 {
+	uint8_t buf[2];
 	PktCtrl1a_t PktCtrl1a;
-	PktCtrl1a.word = 0;//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL1A, 2);
+	//PktCtrl1a.word = 0;//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL1A, 2);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PKTCTRL1A, buf, 2);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	PktCtrl1a.word = buf[0];
+	PktCtrl1a.word <<= 8;
+	PktCtrl1a.word |= buf[1];
 	printf_uart("%x", PktCtrl1a.bits.whit_init_val);
 }
 bool Radio::gfsk_whiteInit_write(const char* txt)
 {
 	unsigned n;
+	uint8_t buf[2];
 	PktCtrl1a_t PktCtrl1a;
-	PktCtrl1a.word = 0;// yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL1A, 2);
+	//PktCtrl1a.word = 0;// yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL1A, 2);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PKTCTRL1A, buf, 2);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return false;
+	}
+	n = buf[0];
+	n <<= 8;
+	n |= buf[1];
+	PktCtrl1a.word = n;
+
 	if (sscanf(txt, "%x", &n) == 1) {
+		uint16_t word;
 		PktCtrl1a.bits.whit_init_val = n;
+		word = PktCtrl1a.word;
+		buf[1] = word & 0xff; // buf[1] is low byte
+		word >>= 8;
+		buf[0] = word & 0xff; // buf[0] is high byte
 		//yyy TODO radio.writeReg(REG_ADDR_FSK_PKTCTRL1A, PktCtrl1a.word, 2);
+		sx126x_status_t ret = sx126x_write_register(transceiver, REG_ADDR_FSK_PKTCTRL1A, buf, 2);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_write_register", ret);
+			return false;
+		}
 	}
 	return false;
 }
@@ -814,9 +1063,9 @@ const value_item_t Radio::gfsk_whiteInit_item = { _ITEM_VALUE, 5, gfsk_whiteInit
 
 
 static const char* crctypes[] = {
-	"	off   ", // 0
-	"1 Byte	", // 1
-	"2 Byte	", // 2
+	"   off    ", // 0
+	"1 Byte    ", // 1
+	"2 Byte    ", // 2
 	"1 Byte inv", // 3
 	"2 Byte inv", // 4
 	NULL
@@ -824,28 +1073,38 @@ static const char* crctypes[] = {
 unsigned Radio::gfsk_crctype_read(bool forWriting)
 {
 	pktCtrl2_t pktCtrl2;
-	pktCtrl2.octet = 0;	//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL2, 1);
-	ppFSK.gfsk.CRCType = pktCtrl2.octet & 0x7; // param8
-	switch (ppFSK.gfsk.CRCType) {
-		case GFSK_CRC_OFF: return 0;
-		case GFSK_CRC_1_BYTE: return 1;
-		case GFSK_CRC_2_BYTE: return 2;
-		case GFSK_CRC_1_BYTE_INV: return 3;
-		case GFSK_CRC_2_BYTE_INV: return 4;
+	//pktCtrl2.octet = 0;	//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL2, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PKTCTRL2, &pktCtrl2.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	ppFSK.crc_type = (sx126x_gfsk_crc_types_t)(pktCtrl2.octet & 0x7); // param8
+	switch (ppFSK.crc_type) {
+		case SX126X_GFSK_CRC_OFF: return 0;
+		case SX126X_GFSK_CRC_1_BYTE: return 1;
+		case SX126X_GFSK_CRC_2_BYTES: return 2;
+		case SX126X_GFSK_CRC_1_BYTE_INV: return 3;
+		case SX126X_GFSK_CRC_2_BYTES_INV: return 4;
 		default: return 5;
 	}
 }
 menuMode_e Radio::gfsk_crctype_write(unsigned sidx)
 {
 	switch (sidx) {
-		case 0: ppFSK.gfsk.CRCType = GFSK_CRC_OFF; break;
-		case 1: ppFSK.gfsk.CRCType = GFSK_CRC_1_BYTE; break;
-		case 2: ppFSK.gfsk.CRCType = GFSK_CRC_2_BYTE; break;
-		case 3: ppFSK.gfsk.CRCType = GFSK_CRC_1_BYTE_INV; break;
-		case 4: ppFSK.gfsk.CRCType = GFSK_CRC_2_BYTE_INV; break;
+		case 0: ppFSK.crc_type = SX126X_GFSK_CRC_OFF; break;
+		case 1: ppFSK.crc_type = SX126X_GFSK_CRC_1_BYTE; break;
+		case 2: ppFSK.crc_type = SX126X_GFSK_CRC_2_BYTES; break;
+		case 3: ppFSK.crc_type = SX126X_GFSK_CRC_1_BYTE_INV; break;
+		case 4: ppFSK.crc_type = SX126X_GFSK_CRC_2_BYTES_INV; break;
 	}
 
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
+	sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+		return MENUMODE_NONE;
+	}
 	return MENUMODE_REDRAW;
 }
 const dropdown_item_t Radio::gfsk_crctype_item = { _ITEM_DROPDOWN, crctypes, crctypes, gfsk_crctype_read, gfsk_crctype_write};
@@ -853,19 +1112,35 @@ const dropdown_item_t Radio::gfsk_crctype_item = { _ITEM_DROPDOWN, crctypes, crc
 bool Radio::gfsk_white_read()
 {
 	pktCtrl2_t pktCtrl2;
-	pktCtrl2.octet = 0;//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL2, 1);
-	ppFSK.gfsk.Whitening = pktCtrl2.bits.whit_enable; // param9
+	//pktCtrl2.octet = 0;//yyy TODO radio.readReg(REG_ADDR_FSK_PKTCTRL2, 1);
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PKTCTRL2, &pktCtrl2.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	if (pktCtrl2.bits.whit_enable) // param9
+		ppFSK.dc_free = SX126X_GFSK_DC_FREE_WHITENING;
+	else
+		ppFSK.dc_free = SX126X_GFSK_DC_FREE_OFF;
+
 	return pktCtrl2.bits.whit_enable;
 }
 bool Radio::gfsk_white_push()
 {
-	if (ppFSK.gfsk.Whitening)
-		ppFSK.gfsk.Whitening = 0;
+
+
+	if (ppFSK.dc_free == SX126X_GFSK_DC_FREE_WHITENING)
+		ppFSK.dc_free = SX126X_GFSK_DC_FREE_OFF;
 	else
-		ppFSK.gfsk.Whitening = 1;
+		ppFSK.dc_free = SX126X_GFSK_DC_FREE_WHITENING;
 
 	//yyy TODO radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
-	return ppFSK.gfsk.Whitening;
+	sx126x_status_t ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+		return 0;
+	}
+	return ppFSK.dc_free;
 }
 const toggle_item_t Radio::gfsk_white_item = { _ITEM_TOGGLE, "Whitening", NULL, gfsk_white_read, gfsk_white_push};
 
@@ -904,20 +1179,30 @@ bool Radio::deviceSel_push()
 		pa_config_buf[2] = 0;
 	else
 		pa_config_buf[2] = 1;*/
-	pa_config_buf[2] ^= 1;
+	pa_config.device_sel ^= 1;
 
 	//yyy TODO radio.xfer(OPCODE_SET_PA_CONFIG, 4, 0, pa_config_buf);
-
-	return pa_config_buf[2];
+	sx126x_status_t ret = sx126x_set_pa_cfg(transceiver, &pa_config);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_pa_cfg", ret);
+		return 0;
+	}
+	return pa_config.device_sel;
 }
 bool Radio::deviceSel_read()
 {
-	/*PaCtrl1b_t PaCtrl1b;
-	PaCtrl1b.octet = radio.readReg(REG_ADDR_PA_CTRL1B, 1);
-	pa_config_buf[2] = PaCtrl1b.bits.tx_mode_bat; // deviceSel
+	PaCtrl1b_t PaCtrl1b;
+	/*PaCtrl1b.octet = radio.readReg(REG_ADDR_PA_CTRL1B, 1);
+	done pa_config_buf[2] = PaCtrl1b.bits.tx_mode_bat; // deviceSel
 	return PaCtrl1b.bits.tx_mode_bat;*/
 	//yyy TODO
-	return 0;
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_PA_CTRL1B, &PaCtrl1b.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	pa_config.device_sel = PaCtrl1b.bits.tx_mode_bat;
+	return pa_config.device_sel;
 }
 const toggle_item_t Radio::deviceSel_item = { _ITEM_TOGGLE, "SX1262", "SX1261", deviceSel_read, deviceSel_push};
 
@@ -948,17 +1233,28 @@ static const char* const paDutyCycles[] = {
 };
 unsigned Radio::paDutyCycle_read(bool forWriting)
 {
-	/*AnaCtrl6_t AnaCtrl6;
-	AnaCtrl6.octet = radio.readReg(REG_ADDR_ANACTRL6, 1);
+	AnaCtrl6_t AnaCtrl6;
+	/*AnaCtrl6.octet = radio.readReg(REG_ADDR_ANACTRL6, 1);
 	pa_config_buf[0] = AnaCtrl6.bits.pa_dctrim_select_ana;
 	return AnaCtrl6.bits.pa_dctrim_select_ana;*/
 	// yyy TODO
-	return 0;
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_ANACTRL6, &AnaCtrl6.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	pa_config.pa_duty_cycle = AnaCtrl6.bits.pa_dctrim_select_ana;
+	return pa_config.pa_duty_cycle;
 }
 menuMode_e Radio::paDutyCycle_write(unsigned sidx)
 {
-	pa_config_buf[0] = sidx;
+	pa_config.pa_duty_cycle = sidx;
 	/// yyy TODO radio.xfer(OPCODE_SET_PA_CONFIG, 4, 0, pa_config_buf);
+	sx126x_status_t ret = sx126x_set_pa_cfg(transceiver, &pa_config);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_pa_cfg", ret);
+		return MENUMODE_NONE;
+	}
 	return MENUMODE_REDRAW;
 }
 const dropdown_item_t Radio::paDutyCycle_item = { _ITEM_DROPDOWN, paDutyCycles, paDutyCycles, paDutyCycle_read, paDutyCycle_write};
@@ -999,14 +1295,15 @@ const value_item_t Radio::xtb_item = { _ITEM_VALUE, 3, xtb_print, xtb_write};
 
 void Radio::tcxo_volts_print(void)
 {
-	// yyy;
+	// TODO yyy;   wasnt implemented in orignal code
 }
 bool Radio::tcxo_volts_write(const char *txt)
 {
-#if 0
-	uint8_t buf[4];
+	sx126x_tcxo_ctrl_voltages_t tcxo_voltage;
+	//uint8_t buf[4];
 	float volts;
 	sscanf(txt, "%f", &volts);
+#if 0
 	if (volts > 3.15)
 		buf[0] = 7;// 3.3v
 	else if (volts > 2.85)
@@ -1029,7 +1326,29 @@ bool Radio::tcxo_volts_write(const char *txt)
 	radio.xfer(OPCODE_SET_DIO3_AS_TCXO_CTRL, 4, 0, buf);
 	log_printf("set txco %u, %u\r\n", buf[0], tcxoDelayTicks);
 #endif /* #if 0 */
-	//yyy TODO
+	if (volts > (float)3.15)
+		tcxo_voltage = SX126X_TCXO_CTRL_3_3V;
+	else if (volts > (float)2.85)
+		tcxo_voltage = SX126X_TCXO_CTRL_3_0V;
+	else if (volts > (float)2.55)
+		tcxo_voltage = SX126X_TCXO_CTRL_2_7V;
+	else if (volts > (float)2.3)
+		tcxo_voltage = SX126X_TCXO_CTRL_2_4V;
+	else if (volts > (float)2.3)
+		tcxo_voltage = SX126X_TCXO_CTRL_2_2V;
+	else if (volts > (float)2.0)
+		tcxo_voltage = SX126X_TCXO_CTRL_1_8V;
+	else if (volts > (float)1.65)
+		tcxo_voltage = SX126X_TCXO_CTRL_1_7V;
+	else
+		tcxo_voltage =SX126X_TCXO_CTRL_1_6V;
+
+
+	sx126x_status_t ret = sx126x_set_dio3_as_tcxo_ctrl(transceiver, tcxo_voltage, tcxoDelayTicks);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_dio3_as_tcxo_ctrl", ret);
+		return false;
+	}
 	return false;
 }
 const value_item_t Radio::tcxo_volts_item = { _ITEM_VALUE, 3, tcxo_volts_print, tcxo_volts_write};
@@ -1043,19 +1362,33 @@ static const char* const rxfe_pms[] = {
 };
 unsigned Radio::rxfe_pm_read(bool)
 {
-	/*AgcSensiAdj_t agcs;
-	agcs.octet = radio.readReg(REG_ADDR_AGC_SENSI_ADJ, 1);
+	AgcSensiAdj_t agcs;
+	/*agcs.octet = radio.readReg(REG_ADDR_AGC_SENSI_ADJ, 1);
 	return agcs.bits.power_mode;*/
-	//yyy TODO
-	return 0;
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_AGC_SENSI_ADJ, &agcs.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	return agcs.bits.power_mode;
 }
 menuMode_e Radio::rxfe_pm_write(unsigned sidx)
 {
-	/*AgcSensiAdj_t agcs;
-	agcs.octet = radio.readReg(REG_ADDR_AGC_SENSI_ADJ, 1);
+	AgcSensiAdj_t agcs;
+	/*agcs.octet = radio.readReg(REG_ADDR_AGC_SENSI_ADJ, 1);
 	agcs.bits.power_mode = sidx;
 	radio.writeReg(REG_ADDR_AGC_SENSI_ADJ, agcs.octet, 1);*/
-	//yyy TODO
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_AGC_SENSI_ADJ, &agcs.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return MENUMODE_NONE;
+	}
+	agcs.bits.power_mode = sidx;
+	ret = sx126x_write_register(transceiver, REG_ADDR_AGC_SENSI_ADJ, &agcs.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_write_register", ret);
+		return MENUMODE_NONE;
+	}
 	return MENUMODE_REDRAW;
 }
 const dropdown_item_t Radio::rxfe_pm_item = { _ITEM_DROPDOWN, rxfe_pms, rxfe_pms, rxfe_pm_read, rxfe_pm_write};
@@ -1073,26 +1406,40 @@ static const char* const hpMaxs[] = {
 };
 menuMode_e Radio::hpMax_write(unsigned sidx)
 {
-	pa_config_buf[1] = sidx;
-	//yyy TODO radio.xfer(OPCODE_SET_PA_CONFIG, 4, 0, pa_config_buf);
+	pa_config.hp_max = sidx;
+	sx126x_status_t ret = sx126x_set_pa_cfg(transceiver, &pa_config);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_pa_cfg", ret);
+		return MENUMODE_NONE;
+	}
+	//radio.xfer(OPCODE_SET_PA_CONFIG, 4, 0, pa_config_buf);
 	return MENUMODE_REDRAW;
 }
 unsigned Radio::hpMax_read(bool forWriting)
 {
-	/*AnaCtrl7_t AnaCtrl7;
-	AnaCtrl7.octet = radio.readReg(REG_ADDR_ANACTRL7, 1);
+	AnaCtrl7_t AnaCtrl7;
+	/*AnaCtrl7.octet = radio.readReg(REG_ADDR_ANACTRL7, 1);
 	pa_config_buf[1] = AnaCtrl7.bits.pa_hp_sel_ana;
 	return AnaCtrl7.bits.pa_hp_sel_ana;*/
-	//yyy TODO
-	return 0;
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_ANACTRL7, &AnaCtrl7.octet, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0;
+	}
+	pa_config.hp_max = AnaCtrl7.bits.pa_hp_sel_ana;
+	return pa_config.hp_max;
 }
 const dropdown_item_t Radio::hpMax_item = { _ITEM_DROPDOWN, hpMaxs, hpMaxs, hpMax_read, hpMax_write};
 
 void Radio::ldo_push()
 {
+	sx126x_status_t ret = sx126x_set_reg_mode(transceiver, SX126X_REG_MODE_LDO);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_reg_mode", ret);
+		return;
+	}
 	/*uint8_t buf = 0;
 	radio.xfer(OPCODE_SET_REGULATOR_MODE, 1, 0, &buf);*/
-	//yyy TODO
 	log_printf("-> LDO\r\n");
 }
 const button_item_t Radio::ldo_item = { _ITEM_BUTTON, "LDO", ldo_push };
@@ -1102,25 +1449,42 @@ void Radio::dcdc_push()
 	/*uint8_t buf = 1;
 	radio.xfer(OPCODE_SET_REGULATOR_MODE, 1, 0, &buf);
 	log_printf("-> DC-DC\r\n");*/
-	//yyy TODO
+	sx126x_status_t ret = sx126x_set_reg_mode(transceiver, SX126X_REG_MODE_DCDC);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_reg_mode", ret);
+		return;
+	}
+	log_printf("-> DCDC\r\n");
 }
 const button_item_t Radio::dcdc_item = { _ITEM_BUTTON, "DCDC", dcdc_push };
 
 bool Radio::ocp_write(const char* txt)
 {
-	//float mA;
+	float mA;
 	/*if (sscanf(txt, "%f", &mA) == 1)
 		radio.writeReg(REG_ADDR_OCP, mA / 2.5, 1);*/
-	// yyy TODO
+	if (sscanf(txt, "%f", &mA) == 1) {
+		uint8_t ocp = (double)mA / 2.5;
+		sx126x_status_t ret = sx126x_write_register(transceiver, REG_ADDR_OCP, &ocp, 1);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_write_register", ret);
+			return false;
+		}
+	}
 
 	return false;
 }
 
 void Radio::ocp_print()
 {
-	/*uint8_t ocp = radio.readReg(REG_ADDR_OCP, 1);
-	printf_uart("%.1f", ocp * 2.5);*/
-	// yyy TODO
+	uint8_t ocp;
+	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_OCP, &ocp, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return;
+	}
+	/*uint8_t ocp = radio.readReg(REG_ADDR_OCP, 1); */
+	printf_uart("%.1f", ocp * 2.5);
 }
 const value_item_t Radio::ocp_item = { _ITEM_VALUE, 5, ocp_print, ocp_write};
 
@@ -1258,7 +1622,6 @@ menuMode_e Radio::opmode_write(unsigned sel)
             }
             break;
     }
-	//yyy TODO
 	if (sx_ret != SX126X_STATUS_OK) {
 		log_printf("%d = sx126x_set_sleep", sx_ret);
 	}
@@ -1275,34 +1638,39 @@ void Radio::clearIrqFlags()
 	uint16_t irq_mask = 0x03ff;
 	sx126x_status_t ret = sx126x_clear_irq_status(transceiver, irq_mask);
 	if (ret != SX126X_STATUS_OK) {
-		log_printf("%d = sx126x_clear_irq_status", ret);
-	}
+		log_printf("%d = sx126x_clear_irq_status\r\n", ret);
+	} else
+		log_printf("clearIrqFlags ok\r\n");
 }
 
 void Radio::Rx()
 {
-	//yyy TODO
+	//yyy TODO antswPower = 1;
+	sx126x_status_t ret = sx126x_set_rx(transceiver, SX126X_MAX_TIMEOUT_IN_MS);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_set_rx", ret);
+	}
 }
 
 const char* const Radio::opmode_status_strs[] = {
-	"<0>	  ", // 0
-	"RFU	  ", // 1
+	"<0>      ", // 0
+	"RFU      ", // 1
 	"STBY_RC  ", // 2
 	"STBY_XOSC", // 3
-	"FS	   ", // 4
-	"RX	   ", // 5
-	"TX	   ", // 6
-	"<7>	  ", // 7
+	"FS       ", // 4
+	"RX       ", // 5
+	"TX       ", // 6
+	"<7>      ", // 7
 	NULL
 };
 
 const char* const Radio::opmode_select_strs[] = {
-	"SLEEP	 ", // 0
+	"SLEEP     ", // 0
 	"STDBY_RC  ", // 1
 	"STDBY_XOSC", // 2
-	"FS		", // 3
-	"RX		", // 4
-	"TX		", // 5
+	"FS        ", // 3
+	"RX        ", // 4
+	"TX        ", // 5
 	NULL
 };
 
@@ -1331,12 +1699,66 @@ unsigned Radio::opmode_read(bool forWriting)
 
 void Radio::set_payload_length(uint8_t len)
 {
-	//yyy TODO
+	sx126x_pkt_type_t pkt_type;
+	sx126x_status_t ret = sx126x_get_pkt_type(transceiver, &pkt_type);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_get_pkt_type", ret);
+		return;
+	}
+
+	if (pkt_type == SX126X_PKT_TYPE_GFSK) {
+		ppFSK.pld_len_in_bytes = len;
+		//radio.xfer(OPCODE_SET_PACKET_PARAMS, 9, 0, ppFSK.buf);
+		ret = sx126x_set_gfsk_pkt_params(transceiver, &ppFSK);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_set_lora_pkt_params", ret);
+			return;
+		}
+	} else if (pkt_type == SX126X_PKT_TYPE_LORA) {
+		ppLORA.pld_len_in_bytes = len;
+		//radio.xfer(OPCODE_SET_PACKET_PARAMS, 6, 0, ppLORA.buf);
+		ret = sx126x_set_lora_pkt_params(transceiver, &ppLORA);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_set_gfsk_pkt_params", ret);
+			return;
+		}
+	} else if (pkt_type == SX126X_PKT_TYPE_BPSK) {
+		log_printf("TODO SX126X_PKT_TYPE_BPSK\r\n");
+	} else if (pkt_type == SX126X_PKT_TYPE_LR_FHSS) {
+		log_printf("TODO SX126X_PKT_TYPE_LR_FHSS\r\n");
+	}
 }
 
 uint8_t Radio::get_payload_length()
 {
-	//yyy TODO
+	sx126x_pkt_type_t pkt_type;
+	sx126x_status_t ret = sx126x_get_pkt_type(transceiver, &pkt_type);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_get_pkt_type", ret);
+		return 0;
+	}
+
+	if (pkt_type == SX126X_PKT_TYPE_GFSK) {
+		ret = sx126x_read_register(transceiver, REG_ADDR_FSK_PAYLOAD_LEN, &ppFSK.pld_len_in_bytes, 1);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_read_register", ret);
+			return 0;
+		}
+		return ppFSK.pld_len_in_bytes;
+	} else if (pkt_type == SX126X_PKT_TYPE_LORA) {
+		ret = sx126x_read_register(transceiver, REG_ADDR_LORA_TXPKTLEN, &ppLORA.pld_len_in_bytes, 1);
+		if (ret != SX126X_STATUS_OK) {
+			log_printf("%d = sx126x_read_register", ret);
+			return 0;
+		}
+		return ppLORA.pld_len_in_bytes;
+	} else if (pkt_type == SX126X_PKT_TYPE_BPSK) {
+		log_printf("TODO SX126X_PKT_TYPE_BPSK\r\n");
+		return 0;
+	} else if (pkt_type == SX126X_PKT_TYPE_LR_FHSS) {
+		log_printf("TODO SX126X_PKT_TYPE_LR_FHSS\r\n");
+		return 0;
+	}
 	return 0;
 }
 
@@ -1395,7 +1817,6 @@ unsigned Radio::tx_ramp_read(bool fw)
 	/*PwrCtrl.octet = radio.readReg(REG_ADDR_PWR_CTRL, 1);
 	tx_param_buf[1] = PwrCtrl.octet >> 5;
 	return PwrCtrl.bits.ramp_time;*/
-	//yyy TODO
 	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_PWR_CTRL, &PwrCtrl.octet, 1);
 	if (ret != SX126X_STATUS_OK) {
 		log_printf("%d = sx126x_read_register", ret);
@@ -1407,15 +1828,25 @@ unsigned Radio::tx_ramp_read(bool fw)
 
 void Radio::write_register(unsigned addr, unsigned val)
 {
+	uint8_t v = val;
+	sx126x_status_t ret = sx126x_write_register(transceiver, addr, &v, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_write_register", ret);
+		return;
+	}
 	//radio.writeReg(addr, val, 1);
-	//yyy TODO
 }
 
 unsigned Radio::read_register(unsigned addr)
 {
+	uint8_t u8;
+	sx126x_status_t ret = sx126x_read_register(transceiver, addr, &u8, 1);
+	if (ret != SX126X_STATUS_OK) {
+		log_printf("%d = sx126x_read_register", ret);
+		return 0xff;
+	}
 	//return radio.readReg(addr, 1);
-	//yyy TODO
-	return 0;
+	return u8;
 }
 
 void Radio::tx_dbm_print()
@@ -1442,7 +1873,7 @@ void Radio::tx_dbm_print()
 		log_printf("%d = sx126x_read_register", ret);
 		return;
 	}
-	pa_config_buf[2] = PaCtrl1b.bits.tx_mode_bat; // deviceSel
+	pa_config.device_sel = PaCtrl1b.bits.tx_mode_bat; // deviceSel
 
 	if (PaCtrl1b.bits.tx_mode_bat)
 		printf_uart("%d", PwrCtrl.bits.tx_pwr - 17);
@@ -1495,14 +1926,15 @@ bool Radio::tx_dbm_write(const char* str)
 
 	return false;
 #endif /* #if 0 */
-	int dbm;
+	int dbm, n;
 	uint8_t v;
 	sx126x_status_t ret = sx126x_read_register(transceiver, REG_ADDR_ANACTRL16, &v, 1);
 	if (ret != SX126X_STATUS_OK) {
 		log_printf("%d = sx126x_read_register", ret);
 		return false;
 	}
-	sscanf(str, "%d", &dbm);
+	n = sscanf(str, "%d", &dbm);
+	log_printf("%d = sscanf(), %d", n, dbm);
 	if (dbm == PA_OFF_DBM) {
 		/* bench test: prevent overloading receiving station (very low tx power) */
 		v |= 0x10; 	// pa dac atb tst
@@ -1574,7 +2006,7 @@ float Radio::getMHz()
 	frf |= buf[2];
 	frf <<= 8;
 	frf |= buf[3];
-    return frf / (float)MHZ_TO_FRF;
+	return frf / (float)MHZ_TO_FRF;
 }
 
 void Radio::setMHz(float MHz)

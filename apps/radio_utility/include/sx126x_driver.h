@@ -296,6 +296,14 @@ typedef union {
 
 typedef union {
     struct {
+        uint8_t power_mode:     2; // 0,1
+        uint8_t sensi_adjust:   6; // 2,3,4,5,6,7
+    } bits;
+    uint8_t octet;
+} AgcSensiAdj_t;  // at 0x8ac
+
+typedef union {
+    struct {
         uint8_t pa_hp_ena_ana        : 1; // 0
         uint8_t tx_ena_bat           : 1; // 1
         uint8_t pa_dctrim_select_ana : 4; // 2,3,4,5        paDutyCycle

@@ -161,12 +161,13 @@ class Radio {
 #if defined(CONFIG_SEMTECH_SX128X)
 #elif defined(CONFIG_SEMTECH_SX127X)
 #elif defined(CONFIG_SEMTECH_SX126X)
-		static uint8_t pa_config_buf[];
+		static sx126x_pa_cfg_params_t pa_config;
 		static sx126x_mod_params_gfsk_t mpFSK;
 		static sx126x_mod_params_lora_t mpLORA;
 		static void write_mpLORA(void);
 		static void write_mpFSK(void);
-        static PacketParams_t ppFSK, ppLORA;
+		static sx126x_pkt_params_gfsk_t ppFSK;
+		static sx126x_pkt_params_lora_t ppLORA;
 		static uint8_t tx_param_buf[];
 #elif defined(CONFIG_SEMTECH_LR11XX)
 #endif
